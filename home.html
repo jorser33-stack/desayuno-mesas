@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Detalle del día {{ fecha.strftime('%d-%m-%Y') }}</h2>
+<div class="row g-3">
+  {% for t in slots %}
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Turno {{ t }}</strong>
+        <span class="badge bg-secondary">{{ total - (por_turno[t]|sum(attribute='mesas')) }} libres</span>
+      </div>
+      <div class="card-body">
+        {% set lista = por_turno[t] %}
+        {% if lista %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead><tr><th>#</th><th>Mesas</th><th>Nombre</th><th>Hab.</th><th>Nota</th><th></th></tr></thead>
+            <tbody>
+            {% for r in lista %}
+              <tr>
+                <td>{{ r.id }}</td>
+                <td>{{ r.mesas }}</td>
+                <td>{{ r.nombre or '-' }}</td>
+                <td>{{ r.habitacion or '-' }}</td>
+                <td>{{ r.nota or '-' }}</td>
+                <td>
+                  <form method="post" action="/cancelar/{{ r.id }}" onsubmit="return confirm('¿Cancelar la reserva {{ r.id }}?');">
+                    <button class="btn btn-sm btn-outline-danger">Cancelar</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+          <div class="text-muted">Sin reservas.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,119 +1,142 @@
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-ENV PORT=8000
-EXPOSE 8000
-CMD gunicorn app:app --bind 0.0.0.0:$PORT --workers=2 --threads=4 --timeout=60
+# -*- coding: utf-8 -*-
+import os
+from datetime import date, datetime, timedelta
+from flask import Flask, render_template, request, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
 
-web: gunicorn app:app --workers=2 --threads=4 --timeout=60
-# Desayuno – Control de Mesas (Web Completa)
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cambia_esta_clave')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///desayuno.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-App web (Flask) para 4 turnos (07,08,09,10) y 30 mesas totales.
-- Reservas por **rango de fechas** (mismo turno)
-- Validación de cupo total por fecha+turno
-- Vista de próximos 7 días con libres/ocupadas
-- Detalle por día y **cancelación**
+SLOTS = ['07:00', '08:00', '09:00', '10:00']
+TOTAL_MESAS = int(os.environ.get('TOTAL_MESAS', '30'))
+NOMBRE = os.environ.get('BUSINESS_NAME', 'Smart Hotel – Desayuno')
 
-## Variables de entorno
-- `TOTAL_MESAS` (default 30)
-- `BUSINESS_NAME` (texto del header)
-- `SECRET_KEY`
-- `DATABASE_URL` (usar `sqlite:////data/desayuno.db` en Render con Disk `/data`)
+db = SQLAlchemy(app)
 
-Flask==2.3.3
-Flask-SQLAlchemy==3.1.1
-SQLAlchemy==2.0.21
-Werkzeug==2.3.7
-gunicorn==21.2.0
+class Reserva(db.Model):
+    __tablename__ = 'reservas'
+    id = db.Column(db.Integer, primary_key=True)
+    fecha = db.Column(db.Date, nullable=False, index=True)
+    turno = db.Column(db.String(5), nullable=False)
+    mesas = db.Column(db.Integer, nullable=False, default=1)
+    nombre = db.Column(db.String(120), nullable=True)
+    habitacion = db.Column(db.String(20), nullable=True)
+    nota = db.Column(db.String(255), nullable=True)
 
-python-3.11.8
-body{background:#fafafa}
-.table td,.table th{vertical-align:middle}
+    __table_args__ = (
+        db.Index('idx_fecha_turno', 'fecha', 'turno'),
+    )
 
-{% extends 'base.html' %}
-{% block content %}
-<h2>Detalle del día {{ fecha.strftime('%d-%m-%Y') }}</h2>
-<div class="row g-3">
-  {% for t in slots %}
-  <div class="col-md-6">
-    <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <strong>Turno {{ t }}</strong>
-        <span class="badge bg-secondary">{{ total - (por_turno[t]|sum(attribute='mesas')) }} libres</span>
-      </div>
-      <div class="card-body">
-        {% set lista = por_turno[t] %}
-        {% if lista %}
-        <div class="table-responsive">
-          <table class="table table-sm">
-            <thead><tr><th>#</th><th>Mesas</th><th>Nombre</th><th>Hab.</th><th>Nota</th><th></th></tr></thead>
-            <tbody>
-            {% for r in lista %}
-              <tr>
-                <td>{{ r.id }}</td>
-                <td>{{ r.mesas }}</td>
-                <td>{{ r.nombre or '-' }}</td>
-                <td>{{ r.habitacion or '-' }}</td>
-                <td>{{ r.nota or '-' }}</td>
-                <td>
-                  <form method="post" action="/cancelar/{{ r.id }}" onsubmit="return confirm('¿Cancelar la reserva {{ r.id }}?');">
-                    <button class="btn btn-sm btn-outline-danger">Cancelar</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-          <div class="text-muted">Sin reservas.</div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
-  {% endfor %}
-</div>
-{% endblock %}
 
-{% extends 'base.html' %}
-{% block content %}
-<h2>Nueva reserva (rango de fechas)</h2>
-<form method="post" class="row g-3 mt-1">
-  <div class="col-md-3">
-    <label class="form-label">Desde (DD-MM-AAAA)</label>
-    <input name="fecha_desde" class="form-control" value="{{ hoy.strftime('%d-%m-%Y') }}" required>
-  </div>
-  <div class="col-md-3">
-    <label class="form-label">Hasta (DD-MM-AAAA)</label>
-    <input name="fecha_hasta" class="form-control" value="{{ manana.strftime('%d-%m-%Y') }}" required>
-  </div>
-  <div class="col-md-3">
-    <label class="form-label">Turno</label>
-    <select name="turno" class="form-select">
-      {% for t in slots %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
-    </select>
-  </div>
-  <div class="col-md-3">
-    <label class="form-label">Mesas</label>
-    <input type="number" min="1" name="mesas" value="1" class="form-control">
-  </div>
-  <div class="col-md-4">
-    <label class="form-label">Nombre (opcional)</label>
-    <input name="nombre" class="form-control">
-  </div>
-  <div class="col-md-2">
-    <label class="form-label">Habitación (opcional)</label>
-    <input name="habitacion" class="form-control">
-  </div>
-  <div class="col-md-6">
-    <label class="form-label">Nota (opcional)</label>
-    <input name="nota" class="form-control">
-  </div>
-  <div class="col-12">
-    <button class="btn btn-primary">Guardar</button>
-  </div>
-</form>
-<p class="small text-muted mt-3">El sistema valida que haya cupo suficiente en <strong>todas</strong> las fechas del rango antes de crear la reserva.</p>
-{% endblock %}
+def parse_date_ddmmyyyy(s: str) -> date:
+    return datetime.strptime(s, '%d-%m-%Y').date()
+
+
+def daterange(start: date, end: date):
+    cur = start
+    while cur <= end:
+        yield cur
+        cur += timedelta(days=1)
+
+
+def mesas_ocupadas(fecha: date, turno: str) -> int:
+    total = db.session.query(db.func.coalesce(db.func.sum(Reserva.mesas), 0)).filter(
+        Reserva.fecha == fecha,
+        Reserva.turno == turno
+    ).scalar() or 0
+    return int(total)
+
+
+def mesas_disponibles(fecha: date, turno: str) -> int:
+    return max(0, TOTAL_MESAS - mesas_ocupadas(fecha, turno))
+
+@app.route('/')
+def home():
+    hoy = date.today()
+    dias = [hoy + timedelta(days=i) for i in range(7)]
+    tabla = []
+    for d in dias:
+        fila = {'fecha': d, 'turnos': []}
+        for t in SLOTS:
+            fila['turnos'].append({
+                'turno': t,
+                'ocupadas': mesas_ocupadas(d, t),
+                'disponibles': mesas_disponibles(d, t)
+            })
+        tabla.append(fila)
+    return render_template('home.html', tabla=tabla, slots=SLOTS, nombre=NOMBRE, total=TOTAL_MESAS)
+
+@app.route('/reservar', methods=['GET', 'POST'])
+def reservar():
+    if request.method == 'POST':
+        try:
+            fecha_desde = parse_date_ddmmyyyy(request.form.get('fecha_desde'))
+            fecha_hasta = parse_date_ddmmyyyy(request.form.get('fecha_hasta'))
+            turno = request.form.get('turno')
+            mesas = int(request.form.get('mesas', 1))
+            nombre = (request.form.get('nombre') or '').strip()
+            habitacion = (request.form.get('habitacion') or '').strip()
+            nota = (request.form.get('nota') or '').strip()
+        except Exception:
+            flash('Datos inválidos. Revisá el formulario (fechas DD-MM-AAAA).', 'danger')
+            return redirect(url_for('reservar'))
+
+        if turno not in SLOTS:
+            flash('Turno inválido.', 'warning')
+            return redirect(url_for('reservar'))
+        if mesas < 1:
+            flash('La cantidad de mesas debe ser al menos 1.', 'warning')
+            return redirect(url_for('reservar'))
+        if fecha_hasta < fecha_desde:
+            flash('La fecha hasta debe ser >= fecha desde.', 'warning')
+            return redirect(url_for('reservar'))
+
+        faltantes = []
+        for d in daterange(fecha_desde, fecha_hasta):
+            if mesas_disponibles(d, turno) < mesas:
+                faltantes.append({'fecha': d, 'disp': mesas_disponibles(d, turno)})
+        if faltantes:
+            msg = 'Sin cupo suficiente en: ' + ', '.join([f"{f['fecha'].strftime('%d-%m-%Y')} (disp {f['disp']})" for f in faltantes])
+            flash(msg, 'danger')
+            return redirect(url_for('reservar'))
+
+        for d in daterange(fecha_desde, fecha_hasta):
+            r = Reserva(fecha=d, turno=turno, mesas=mesas, nombre=nombre, habitacion=habitacion, nota=nota)
+            db.session.add(r)
+        db.session.commit()
+        flash('Reserva creada correctamente para el rango indicado.', 'success')
+        return redirect(url_for('home'))
+
+    hoy = date.today()
+    manana = hoy + timedelta(days=1)
+    return render_template('reservar.html', hoy=hoy, manana=manana, slots=SLOTS, nombre=NOMBRE)
+
+@app.route('/detalle/<string:fecha_str>')
+def detalle_dia(fecha_str):
+    try:
+        d = parse_date_ddmmyyyy(fecha_str)
+    except Exception:
+        return redirect(url_for('home'))
+    por_turno = {}
+    for t in SLOTS:
+        por_turno[t] = Reserva.query.filter_by(fecha=d, turno=t).order_by(Reserva.id.desc()).all()
+    return render_template('detalle.html', fecha=d, por_turno=por_turno, slots=SLOTS, nombre=NOMBRE, total=TOTAL_MESAS)
+
+@app.route('/cancelar/<int:reserva_id>', methods=['POST'])
+def cancelar(reserva_id):
+    r = Reserva.query.get_or_404(reserva_id)
+    d = r.fecha
+    db.session.delete(r)
+    db.session.commit()
+    flash('Reserva cancelada.', 'info')
+    return redirect(url_for('detalle_dia', fecha_str=d.strftime('%d-%m-%Y')))
+
+@app.before_first_request
+def init_db():
+    db.create_all()
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', '5000'))
+    app.run(host='0.0.0.0', port=port, debug=True)
